@@ -22,8 +22,28 @@ type ExampleReply struct {
 	Y int
 }
 
-// Add your RPC definitions here.
+type ReqWorkArgs struct {
+}
+type ReqWorkReply struct {
+	TaskType            string
+	InputFileName       string
+	ReduceID            int
+	IntermediateFiles   []string
+	NReduce             int
+	SaltForIntermediate int
+}
 
+type WorkDoneArgs struct {
+	TaskType              string
+	IntermediateFileNames []string
+	InputFileName         string
+	OutPutID              int
+}
+type WorkDoneReply struct {
+	//OutDated bool //if the task is already finished by other assigned workers
+}
+
+// Add your RPC definitions here.
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
