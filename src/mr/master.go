@@ -95,57 +95,71 @@ func (m *Master) ReqWork(args *ReqWorkArgs, reply *ReqWorkReply) error {
 	defer m.Unlock()
 	reply.TaskType = m.GetPhase()
 	if reply.TaskType == "map" {
-		reply.InputFileName = m.NextInputFile()
-		reply.NReduce = m.NReduce
-		reply.SaltForIntermediate = m.NextSaltForIntermediate()
-		if _, ok := m.DoneInputChanMap[reply.InputFileName]; !ok {
-			m.DoneInputChanMap[reply.InputFileName] = make(chan bool)
-		}
-		go func(inputFileName string) {
-			timer := time.NewTimer(10 * time.Second)
-			select {
-			case <-timer.C:
-				m.Lock()
-				defer m.Unlock()
-				if _, ok := m.DoneInputFiles[inputFileName]; !ok {
-					m.FailedInputFile = append(m.FailedInputFile, inputFileName)
-				}
-				return
-			case <-m.DoneInputChanMap[inputFileName]:
-				return
-			}
-		}(reply.InputFileName)
+		m.AssignMapTask(reply)
+		go m.SetUpMapTimer(reply.InputFileName)
 	} else if reply.TaskType == "reduce" {
-		reply.ReduceID = m.NextReduceID()
-		if reply.ReduceID != -1 {
-			reply.IntermediateFiles = m.GetIntermediateFilesByID(reply.ReduceID)
-		}
-		if _, ok := m.DoneReduceChanMap[reply.ReduceID]; !ok {
-			m.DoneReduceChanMap[reply.ReduceID] = make(chan bool)
-		}
-		go func(reduceID int) {
-			timer := time.NewTimer(10 * time.Second)
-			select {
-			case <-timer.C:
-				m.Lock()
-				defer m.Unlock()
-				if _, ok := m.ReduceIdDone[reduceID]; !ok {
-					m.FailedRecudeTask = append(m.FailedRecudeTask, reduceID)
-				}
-				return
-			case <-m.DoneReduceChanMap[reduceID]:
-				return
-			}
-		}(reply.ReduceID)
+		m.AssignReduceTask(reply)
+		go m.SetUpReduceTimer(reply.ReduceID)
 	}
 	return nil
 }
+
+func (m *Master) AssignMapTask(reply *ReqWorkReply) {
+	reply.InputFileName = m.NextInputFile()
+	reply.NReduce = m.NReduce
+	reply.SaltForIntermediate = m.NextSaltForIntermediate()
+
+	if _, ok := m.DoneInputChanMap[reply.InputFileName]; !ok {
+		m.DoneInputChanMap[reply.InputFileName] = make(chan bool)
+	}
+}
+
+func (m *Master) AssignReduceTask(reply *ReqWorkReply) {
+	reply.ReduceID = m.NextReduceID()
+	if reply.ReduceID != -1 {
+		reply.IntermediateFiles = m.GetIntermediateFilesByID(reply.ReduceID)
+	}
+
+	//if it exist do not create a new one, due to it is fine to get result from previous slow reduce worker
+	if _, ok := m.DoneReduceChanMap[reply.ReduceID]; !ok {
+		m.DoneReduceChanMap[reply.ReduceID] = make(chan bool)
+	}
+}
+
+//timer for hearing word done by map task
+func (m *Master) SetUpMapTimer(inputFileName string) {
+	timer := time.NewTimer(10 * time.Second)
+	select {
+	case <-timer.C:
+		m.Lock()
+		defer m.Unlock()
+		if _, ok := m.DoneInputFiles[inputFileName]; !ok {
+			m.FailedInputFile = append(m.FailedInputFile, inputFileName)
+		}
+		return
+	case <-m.DoneInputChanMap[inputFileName]:
+		return
+	}
+}
+
+func (m *Master) SetUpReduceTimer(reduceID int) {
+	timer := time.NewTimer(10 * time.Second)
+	select {
+	case <-timer.C:
+		m.Lock()
+		defer m.Unlock()
+		if _, ok := m.ReduceIdDone[reduceID]; !ok {
+			m.FailedRecudeTask = append(m.FailedRecudeTask, reduceID)
+		}
+		return
+	case <-m.DoneReduceChanMap[reduceID]:
+		return
+	}
+}
 func (m *Master) WorkDone(args *WorkDoneArgs, reply *WorkDoneReply) error {
-	//reply.OutDated = false
 	m.Lock()
 	defer m.Unlock()
 	if m.GetPhase() != args.TaskType {
-		//reply.OutDated = true
 		return nil
 	}
 
@@ -161,7 +175,6 @@ func (m *Master) WorkDone(args *WorkDoneArgs, reply *WorkDoneReply) error {
 
 func (m *Master) MapWorkDone(args *WorkDoneArgs, reply *WorkDoneReply) {
 	if _, ok := m.DoneInputFiles[args.InputFileName]; ok {
-		//reply.OutDated = true
 		return
 	}
 
