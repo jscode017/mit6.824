@@ -277,7 +277,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	log.Printf("%d voted for %d at time %s\n", rf.me, args.CandidateID, time.Now().String())
 }
 func (rf *Raft) Vote(voteForID, voteTerm int, reply *RequestVoteReply) {
-	rf.VotedTerm = rf.CurTerm
 	rf.VotedFor = voteTerm
 	reply.VoteGranted = true
 	reply.Me = rf.me
@@ -297,21 +296,16 @@ func (rf *Raft) CheckLastLog(args *RequestVoteArgs, reply *RequestVoteReply) boo
 func (rf *Raft) CheckReqVoteTerm(args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	curTerm := rf.GetTerm()
 	reqVoteTerm := args.Term
-	if rf.VotedTerm > reqVoteTerm {
-		reply.VoteGranted = false
-		return false
-	} else if rf.VotedTerm == reqVoteTerm && rf.VotedFor != -1 {
-		reply.VoteGranted = false
-		return false
-	}
 	if curTerm > reqVoteTerm {
 		reply.Term = curTerm
 		reply.VoteGranted = false
 		return false
 	} else if curTerm < reqVoteTerm {
 		rf.UpdateTerm(reqVoteTerm)
+	} else { //==
+		reply.VoteGranted = (rf.VotedFor == -1)
+		return reply.VoteGranted
 	}
-	log.Printf("raft %d log granted prev vote term %d votefor %d\n", rf.me, rf.VotedTerm, rf.VotedFor)
 	return true
 }
 
@@ -423,9 +417,8 @@ func (rf *Raft) Follower() {
 				break
 			}
 			rf.ChangeLeaderState(Candidate)
-			rf.VotedTerm = rf.GetTerm()
 			rf.VotedFor = rf.me
-			log.Printf("rafts %d change to candidate at term %d and voteterm %d voted for %d at time %s\n", rf.me, rf.GetTerm(), rf.VotedTerm, rf.VotedFor, time.Now().String())
+			log.Printf("rafts %d change to candidate at term %d at time %s\n", rf.me, rf.GetTerm(), time.Now().String())
 			rf.mu.Unlock()
 			return
 
@@ -653,7 +646,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.ReqVoteReplych = make(chan RequestVoteReply)
 	rf.VoteForNewLeaderCh = make(chan bool)
 	rf.VotedFor = -1
-	rf.VotedTerm = -1
 
 	rf.minLeaderElecTime = 300
 	rf.maxLeaderElecTime = 600
