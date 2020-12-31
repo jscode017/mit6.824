@@ -55,9 +55,12 @@ type AppendEntriesArgs struct {
 	LeaderCommit int
 }
 type AppendEntriesReply struct {
-	OutDated bool
-	Term     int
-	Success  bool
+	OutDated      bool
+	Term          int
+	Success       bool
+	LargestIndex  int
+	ConflictTerm  int
+	ConflictIndex int
 }
 
 //enum for leader state
@@ -121,6 +124,33 @@ func (rf *Raft) GetLastLogTerm() int {
 		return 0
 	}
 	return rf.entryLogs[len(rf.entryLogs)-1].Term
+}
+func (rf *Raft) GetFirstIndexByTerm(term int) int {
+	termExist := false
+	for i := len(rf.entryLogs) - 1; i >= 0; i-- {
+		if rf.entryLogs[i].Term == term {
+			termExist = true
+		} else if rf.entryLogs[i].Term < term {
+			if termExist {
+				return i + 2
+			} else {
+				return -1
+			}
+		}
+	}
+
+	if termExist {
+		return 1
+	}
+	return -1
+}
+func (rf *Raft) GetLastIndexByTerm(term int) int {
+	for i := len(rf.entryLogs) - 1; i >= 0; i-- {
+		if rf.entryLogs[i].Term == term {
+			return i + 1
+		}
+	}
+	return -1
 }
 func (rf *Raft) Add1toTerm() {
 	rf.UpdateTerm(rf.GetTerm() + 1)
@@ -253,15 +283,15 @@ func (rf *Raft) sendHeartBeats(originHeartBeat *AppendEntriesArgs, heartBeatOutD
 		go func(serverID int, heartBeatOutDatedCh chan int) {
 			for {
 				rf.mu.Lock()
-				if !rf.CheckIsLeader() {
-					rf.mu.Unlock()
-					return
-				}
 				heartBeat := &AppendEntriesArgs{
 					LeaderCommit: rf.GetLeaderCommit(),
 					PrevLogIndex: rf.GetLastLogIndex(),
 					PrevLogTerm:  rf.GetLastLogTerm(),
 					Term:         rf.GetTerm(),
+				}
+				if !rf.CheckIsLeader() {
+					rf.mu.Unlock()
+					return
 				}
 				//log.Printf("sending heartbeat to %d\n", serverID)
 				nextIndex := rf.nextIndex[serverID]
@@ -300,6 +330,21 @@ func (rf *Raft) sendHeartBeats(originHeartBeat *AppendEntriesArgs, heartBeatOutD
 				if !heartBeatReply.Success {
 					rf.mu.Lock()
 					log.Println("heartbeat insuccess")
+					if heartBeatReply.LargestIndex > 0 {
+						rf.nextIndex[serverID] = heartBeatReply.LargestIndex
+						rf.mu.Unlock()
+						continue
+					}
+					if heartBeatReply.ConflictTerm > 0 {
+						lastIndexOfTerm := rf.GetLastIndexByTerm(heartBeatReply.ConflictTerm)
+						if lastIndexOfTerm > 0 {
+							rf.nextIndex[serverID] = lastIndexOfTerm
+						} else {
+							rf.nextIndex[serverID] = heartBeatReply.ConflictIndex
+						}
+						rf.mu.Unlock()
+						continue
+					}
 					rf.nextIndex[serverID]--
 					rf.mu.Unlock()
 					continue
@@ -363,8 +408,10 @@ func (rf *Raft) commit() {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	log.Printf("raft %d %+v\n", rf.me, args)
-
+	//log.Printf("raft %d %+v\n", rf.me, args)
+	reply.LargestIndex = -1
+	reply.ConflictTerm = -1
+	reply.ConflictIndex = -1
 	isHeartBeat := len(args.EntryLogs) == 0
 	if isHeartBeat {
 		log.Println("is heartbeat")
@@ -376,7 +423,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			//rf.HeartBeatCh <- true
 			rf.commitIndex = intMax(rf.commitIndex, args.LeaderCommit)
 			rf.commitIndex = intMin(rf.commitIndex, len(rf.entryLogs))
-			log.Printf("raft %d ready to enter commit\n", rf.me)
 			rf.commit()
 		}
 		return
@@ -386,7 +432,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 		rf.commit()
 	}
-	log.Println("end of append entry")
+	log.Printf("raft %d at term %d end of append entry\n", rf.me, rf.GetTerm())
 }
 
 func (rf *Raft) DealWithHeartBeat(args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -405,12 +451,15 @@ func (rf *Raft) DealWithHeartBeat(args *AppendEntriesArgs, reply *AppendEntriesR
 	rf.justGetHeartBeat = true
 	if args.PrevLogIndex > len(rf.entryLogs) {
 		log.Printf("raft %d got heart beat(empty logs) prev entrylog not match\n", rf.me)
+		reply.LargestIndex = len(rf.entryLogs)
 		reply.Success = false
 		return false
 	}
 	prevIndex := args.PrevLogIndex
 	if prevIndex > 0 && rf.entryLogs[prevIndex-1].Term != args.PrevLogTerm {
 		log.Printf("raft %d got heart beat(empty logs) previndex term not match\n", rf.me)
+		reply.ConflictTerm = rf.entryLogs[prevIndex-1].Term
+		reply.ConflictIndex = rf.GetFirstIndexByTerm(reply.ConflictTerm)
 		reply.Success = false
 		return false
 	}
@@ -433,12 +482,15 @@ func (rf *Raft) DealWithAppendEntries(args *AppendEntriesArgs, reply *AppendEntr
 	rf.justGetHeartBeat = true
 	if args.PrevLogIndex > len(rf.entryLogs) {
 		log.Printf("raft %d got heart beat prev entrylog not match\n", rf.me)
+		reply.LargestIndex = len(rf.entryLogs)
 		reply.Success = false
 		return false
 	}
 	prevIndex := args.PrevLogIndex
 	if prevIndex > 0 && rf.entryLogs[prevIndex-1].Term != args.PrevLogTerm {
 		log.Printf("raft %d got heart beat previndex term not match\n", rf.me)
+		reply.ConflictTerm = rf.entryLogs[prevIndex-1].Term
+		reply.ConflictIndex = rf.GetFirstIndexByTerm(reply.ConflictTerm)
 		reply.Success = false
 		return false
 	}
@@ -464,7 +516,7 @@ func (rf *Raft) DealWithAppendEntries(args *AppendEntriesArgs, reply *AppendEntr
 	}
 	lastAppendEntry := args.EntryLogs[len(args.EntryLogs)-1]
 	rf.entryLogs = rf.entryLogs[:lastAppendEntry.Index]
-	log.Printf("raft %d's new log %+v\n", rf.me, rf.entryLogs)
+	//log.Printf("raft %d's new log %+v\n", rf.me, rf.entryLogs)
 	reply.Success = true
 	return true
 }
@@ -525,6 +577,10 @@ func (rf *Raft) CheckReqVoteTerm(args *RequestVoteArgs, reply *RequestVoteReply)
 		log.Printf("raft %d get req vote but current term>req vote term\n", rf.me)
 		return false
 	} else if curTerm < reqVoteTerm {
+		if rf.CheckIsLeader() {
+			rf.StepDown()
+			rf.VoteForNewLeaderCh <- true
+		}
 		rf.UpdateTerm(reqVoteTerm)
 	} else { //==
 		//reply.VoteGranted = (rf.VotedFor == -1)
@@ -584,7 +640,7 @@ func (rf *Raft) sendRequestVotes(wg *sync.WaitGroup, voteExceedMajorCh chan bool
 			reqVoteReply := RequestVoteReply{}
 			ok := rf.sendRequestVote(serverID, &reqVoteArgs, &reqVoteReply)
 			if !ok {
-				log.Printf("req vote to server %d not responding\n", serverID)
+				log.Printf("raft %d req vote to server %d not responding\n", rf.me, serverID)
 				wg.Done()
 				return
 			}
@@ -820,6 +876,7 @@ func (rf *Raft) Leader() {
 		select {
 		case <-time.After(150 * time.Millisecond):
 			//log.Println("send heart beat")
+			log.Printf("raft %d sending heartbeat\n", rf.me)
 			rf.sendHeartBeats(&heartBeat, heartBeatOutDatedCh)
 		case <-rf.VoteForNewLeaderCh:
 			rf.mu.Lock()
@@ -837,8 +894,8 @@ func (rf *Raft) Leader() {
 		case term := <-heartBeatOutDatedCh:
 			rf.mu.Lock()
 			log.Printf("leader %d step down due to heart beat out of date\n", rf.me)
-			rf.UpdateTerm(term)
 			rf.StepDown()
+			rf.UpdateTerm(term)
 			rf.mu.Unlock()
 			log.Printf("raft %d step down\n", rf.me)
 			//time.Sleep(50 * time.Millisecond)

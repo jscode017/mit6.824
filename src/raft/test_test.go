@@ -427,9 +427,10 @@ func TestBackup2B(t *testing.T) {
 		cfg.disconnect(i)
 	}
 	cfg.connect((leader1 + 0) % servers)
+	//cfg.rafts[leader1].Start(rand.Int())
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
-
+	//cfg.one(rand.Int(), 3, true)
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
 		cfg.one(rand.Int(), 3, true)
@@ -439,6 +440,7 @@ func TestBackup2B(t *testing.T) {
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
 	}
+
 	cfg.one(rand.Int(), servers, true)
 
 	cfg.end()
