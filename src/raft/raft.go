@@ -290,6 +290,7 @@ func (rf *Raft) sendHeartBeats(originHeartBeat *AppendEntriesArgs, heartBeatOutD
 					Term:         rf.GetTerm(),
 				}
 				if !rf.CheckIsLeader() {
+					log.Printf("raft %d not leader exit sending heartbeat\n", rf.me)
 					rf.mu.Unlock()
 					return
 				}
@@ -624,24 +625,23 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-func (rf *Raft) sendRequestVotes(wg *sync.WaitGroup, voteExceedMajorCh chan bool, majority int, electionClosedCh chan bool, reqVoteArgs RequestVoteArgs) {
+func (rf *Raft) sendRequestVotes(voteExceedMajorCh chan bool, majority int, electionClosedCh chan bool, reqVoteArgs RequestVoteArgs) {
 	var voteGot int32
 	voteGot = 1
-	rf.mu.Lock()
-	peersNum := len(rf.peers)
-	rf.mu.Unlock()
-	for i := 0; i < peersNum; i++ {
+	wg := sync.WaitGroup{}
+	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
 		serverID := i
 		wg.Add(1)
 		go func(serverID int) {
+			defer wg.Done()
 			reqVoteReply := RequestVoteReply{}
+			log.Printf("raft %d prepare to send vote to %d\n", rf.me, serverID)
 			ok := rf.sendRequestVote(serverID, &reqVoteArgs, &reqVoteReply)
 			if !ok {
 				log.Printf("raft %d req vote to server %d not responding\n", rf.me, serverID)
-				wg.Done()
 				return
 			}
 			rf.mu.Lock()
@@ -652,16 +652,15 @@ func (rf *Raft) sendRequestVotes(wg *sync.WaitGroup, voteExceedMajorCh chan bool
 					voteExceedMajorCh <- true
 				}
 			} else {
-				log.Printf("does not get req vote of %d\n", serverID)
+				log.Printf("raft %d does not get req vote of %d\n", rf.me, serverID)
 			}
 			rf.mu.Unlock()
-			wg.Done()
 			return
 		}(serverID)
 	}
 	go func() {
 		wg.Wait()
-		log.Println("get all votes")
+		log.Printf("raft %d get all votes\n", rf.me)
 		if voteGot < int32(majority) {
 			electionClosedCh <- true
 		}
@@ -700,7 +699,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//rf.mu.Lock()
 	if isLeader {
 		rf.AppendEntryLog(entryLog)
-		log.Printf("raft %d get entrylogs %+v\n", rf.me, rf.entryLogs)
+		log.Printf("raft %d get entrylogs %+v\n", rf.me, rf.entryLogs[len(rf.entryLogs)-1])
 	} //rf.mu.Unlock()
 	//rf.SendEntryCh <- entryLog
 	return index, term, isLeader
@@ -796,7 +795,6 @@ func (rf *Raft) Candidate() {
 	majority := int(math.Ceil(float64(len(rf.peers)) / 2.0))
 	log.Printf("raft %d prepare to send out req vote\n", rf.me)
 	rf.mu.Unlock()
-	wg := sync.WaitGroup{}
 
 	if rf.killed() {
 		return
@@ -806,7 +804,7 @@ func (rf *Raft) Candidate() {
 	rf.mu.Unlock()
 	voteExceedMajorCh := make(chan bool)
 	electionClosedCh := make(chan bool)
-	rf.sendRequestVotes(&wg, voteExceedMajorCh, majority, electionClosedCh, reqVoteArgs)
+	rf.sendRequestVotes(voteExceedMajorCh, majority, electionClosedCh, reqVoteArgs)
 	candidateElecTime := rf.minLeaderElecTime
 	select {
 	case <-time.After(time.Duration(candidateElecTime) * time.Millisecond):
