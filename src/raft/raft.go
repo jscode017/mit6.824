@@ -450,6 +450,24 @@ func (rf *Raft) DealWithHeartBeat(args *AppendEntriesArgs, reply *AppendEntriesR
 	}
 	rf.HeartBeatCh <- true
 	rf.justGetHeartBeat = true
+	/*if args.PrevLogIndex > len(rf.entryLogs) {
+		log.Printf("raft %d got heart beat(empty logs) prev entrylog not match\n", rf.me)
+		reply.LargestIndex = len(rf.entryLogs)
+		reply.Success = false
+		return false
+	}
+	prevIndex := args.PrevLogIndex
+	if prevIndex > 0 && rf.entryLogs[prevIndex-1].Term != args.PrevLogTerm {
+		log.Printf("raft %d got heart beat(empty logs) previndex term not match\n", rf.me)
+		reply.ConflictTerm = rf.entryLogs[prevIndex-1].Term
+		reply.ConflictIndex = rf.GetFirstIndexByTerm(reply.ConflictTerm)
+		reply.Success = false
+		return false
+	}*/
+	return rf.CheckPrevLogsForHeartBeat(args, reply)
+
+}
+func (rf *Raft) CheckPrevLogsForHeartBeat(args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	if args.PrevLogIndex > len(rf.entryLogs) {
 		log.Printf("raft %d got heart beat(empty logs) prev entrylog not match\n", rf.me)
 		reply.LargestIndex = len(rf.entryLogs)
@@ -481,7 +499,7 @@ func (rf *Raft) DealWithAppendEntries(args *AppendEntriesArgs, reply *AppendEntr
 	}
 	rf.HeartBeatCh <- true
 	rf.justGetHeartBeat = true
-	if args.PrevLogIndex > len(rf.entryLogs) {
+	/*if args.PrevLogIndex > len(rf.entryLogs) {
 		log.Printf("raft %d got heart beat prev entrylog not match\n", rf.me)
 		reply.LargestIndex = len(rf.entryLogs)
 		reply.Success = false
@@ -493,6 +511,9 @@ func (rf *Raft) DealWithAppendEntries(args *AppendEntriesArgs, reply *AppendEntr
 		reply.ConflictTerm = rf.entryLogs[prevIndex-1].Term
 		reply.ConflictIndex = rf.GetFirstIndexByTerm(reply.ConflictTerm)
 		reply.Success = false
+		return false
+	}*/
+	if !rf.CheckPrevLogsForHeartBeat(args, reply) {
 		return false
 	}
 
