@@ -83,16 +83,18 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	CurTerm      int
-	LeaderState  int
-	VotedFor     int
-	LastLogIndex int
-	LastLogTerm  int
-
+	CurTerm            int
+	LeaderState        int
+	VotedTerm          int
+	VotedFor           int
+	LastLogIndex       int
+	LastLogTerm        int
+	ReqVoteReplych     chan RequestVoteReply
 	AppendEntriesCh    chan AppendEntriesArgs
 	HeartBeatCh        chan bool
 	VoteForNewLeaderCh chan bool
 
+	leaderElecTicker  *time.Ticker
 	minLeaderElecTime int
 	maxLeaderElecTime int
 
@@ -153,13 +155,10 @@ func (rf *Raft) GetLastIndexByTerm(term int) int {
 	return -1
 }
 func (rf *Raft) Add1toTerm() {
-	rf.UpdateTerm(rf.GetTerm() + 1)
+	rf.CurTerm++
 }
-
-//need to set votedfor==-1 when updating term
 func (rf *Raft) UpdateTerm(newTerm int) {
 	rf.CurTerm = newTerm
-	rf.VotedFor = -1
 }
 
 // return currentTerm and whether this server
@@ -387,6 +386,9 @@ func (rf *Raft) sendHeartBeats(originHeartBeat *AppendEntriesArgs, heartBeatOutD
 					rf.mu.Unlock()
 					return
 				}
+			}
+			if ok {
+				log.Printf("raft %d send heartbeat to %d\n", rf.me, serverID)
 			}
 		}(serverID, heartBeatOutDatedCh)
 	}
@@ -640,12 +642,12 @@ func (rf *Raft) CheckReqVoteTerm(args *RequestVoteArgs, reply *RequestVoteReply)
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
 
+<<<<<<< HEAD
 func (rf *Raft) sendRequestVotes(voteExceedMajorCh chan bool, majority int, electionClosedCh chan bool, reqVoteArgs RequestVoteArgs) {
 	var voteGot int32
 	voteGot = 1
@@ -689,6 +691,8 @@ func (rf *Raft) sendRequestVotes(voteExceedMajorCh chan bool, majority int, elec
 	}()
 }
 
+=======
+>>>>>>> parent of e059874... some easy refactor for lab2A
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -774,9 +778,13 @@ func (rf *Raft) Follower() {
 		case <-time.After(time.Duration(randTime) * time.Millisecond):
 			log.Printf("raft %d election time out\n", rf.me)
 			rf.mu.Lock()
+<<<<<<< HEAD
 			justVotedOrJustGetHeartBeat := (rf.justVote || rf.justGetHeartBeat)
 			if justVotedOrJustGetHeartBeat {
 				log.Printf("raft %d just get heartbeat or voted\n", rf.me)
+=======
+			if rf.justVote || rf.justGetHeartBeat {
+>>>>>>> parent of e059874... some easy refactor for lab2A
 				rf.mu.Unlock()
 				break
 			}
@@ -811,6 +819,8 @@ func (rf *Raft) CanEnterCandidate() bool {
 func (rf *Raft) Candidate() {
 	//the validity for candidate state should be checked before enter candidate state
 
+	var voteGot int32
+	voteGot = 1
 	rf.mu.Lock()
 
 	majority := int(math.Ceil(float64(len(rf.peers)) / 2.0))
@@ -822,13 +832,54 @@ func (rf *Raft) Candidate() {
 	}
 	rf.mu.Lock()
 	reqVoteArgs := MakeRequestVoteArgs(rf.GetTerm(), rf.me, rf.GetLastLogTerm(), rf.GetLastLogIndex())
+	peersNum := len(rf.peers)
 	rf.mu.Unlock()
 	voteExceedMajorCh := make(chan bool)
+<<<<<<< HEAD
 	electionClosedCh := make(chan bool)
 	rf.sendRequestVotes(voteExceedMajorCh, majority, electionClosedCh, reqVoteArgs)
 	candidateElecTime := rf.minLeaderElecTime
+=======
+	for i := 0; i < peersNum; i++ {
+		if i == rf.me {
+			continue
+		}
+		serverID := i
+		wg.Add(1)
+		go func(serverID int) {
+			reqVoteReply := RequestVoteReply{}
+			ok := rf.sendRequestVote(serverID, &reqVoteArgs, &reqVoteReply)
+			if !ok {
+				log.Printf("server %d not responding\n", serverID)
+				wg.Done()
+				return
+			}
+			rf.mu.Lock()
+			if rf.DealWithReqVoteReply(&reqVoteReply) {
+				log.Printf("got vote from %d\n", reqVoteReply.Me)
+				newVoteGot := atomic.AddInt32(&voteGot, 1)
+				if newVoteGot == int32(majority) {
+					voteExceedMajorCh <- true
+				}
+			}
+			rf.mu.Unlock()
+			wg.Done()
+			return
+		}(serverID)
+	}
+
+	electionClosedCh := make(chan bool)
+	go func() {
+		wg.Wait()
+		if voteGot < int32(majority) {
+			electionClosedCh <- true
+		}
+		return
+	}()
+	candidateElecTimeOut := rf.minLeaderElecTime
+>>>>>>> parent of e059874... some easy refactor for lab2A
 	select {
-	case <-time.After(time.Duration(candidateElecTime) * time.Millisecond):
+	case <-time.After(time.Duration(candidateElecTimeOut) * time.Millisecond):
 		rf.mu.Lock()
 		rf.StepDown()
 		rf.mu.Unlock()
@@ -841,7 +892,7 @@ func (rf *Raft) Candidate() {
 	case <-voteExceedMajorCh:
 		rf.mu.Lock()
 		rf.ChangeLeaderState(Leader)
-		log.Printf("raft %d becomes leader at term %d\n", rf.me, rf.GetTerm())
+		log.Printf("raft %d becomes leader at term %d got %d votes out of %d\n", rf.me, rf.GetTerm(), voteGot, len(rf.peers))
 		rf.mu.Unlock()
 		return
 	case <-rf.VoteForNewLeaderCh:
@@ -881,7 +932,6 @@ func (rf *Raft) Leader() {
 	rf.mu.Unlock()
 	heartBeatOutDatedCh := make(chan int)
 
-	log.Printf("raft %d sending hearbeats at term %d\n", rf.me, heartBeat.Term)
 	go rf.sendHeartBeats(&heartBeat, heartBeatOutDatedCh)
 
 	//majorityLostCh := make(chan bool)
@@ -894,9 +944,30 @@ func (rf *Raft) Leader() {
 
 		select {
 		case <-time.After(150 * time.Millisecond):
+<<<<<<< HEAD
 			//log.Println("send heart beat")
 			log.Printf("raft %d sending heartbeat\n", rf.me)
 			rf.sendHeartBeats(&heartBeat, heartBeatOutDatedCh)
+=======
+			//var lostPeers int64
+			//lostPeers = 0
+			for i := 0; i < len(rf.peers); i++ {
+				if rf.killed() {
+					return
+				}
+				if i == rf.me {
+					continue
+				}
+				serverID := i
+				go func(serverID int) {
+					heartBeatReply := AppendEntriesReply{}
+					rf.sendAppendEntries(serverID, &heartBeat, &heartBeatReply)
+					if heartBeatReply.OutDated {
+						heartBeatOutDatedCh <- heartBeatReply.Term
+					}
+				}(serverID)
+			}
+>>>>>>> parent of e059874... some easy refactor for lab2A
 		case <-rf.VoteForNewLeaderCh:
 			rf.mu.Lock()
 			log.Printf("leader %d steps down due to vote for new\n", rf.me)
@@ -968,6 +1039,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.LastLogTerm = 0
 	rf.LastLogIndex = 0
 	rf.LeaderState = Follower
+	rf.ReqVoteReplych = make(chan RequestVoteReply)
 	rf.VoteForNewLeaderCh = make(chan bool)
 	rf.VotedFor = -1
 
