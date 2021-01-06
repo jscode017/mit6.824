@@ -656,7 +656,7 @@ func TestPersist32C(t *testing.T) {
 	cfg.begin("Test (2C): partitioned leader and one follower crash, leader restarts")
 
 	cfg.one(101, 3, true)
-
+	log.Println("-------- check one 101 3 true")
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 2) % servers)
 
@@ -688,7 +688,7 @@ func TestPersist32C(t *testing.T) {
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
 //
-func TestFigure82C(t *testing.T) {
+func TestFigure82C(t *testing.T) { //not pass
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -719,6 +719,7 @@ func TestFigure82C(t *testing.T) {
 
 		if leader != -1 {
 			cfg.crash1(leader)
+			log.Printf("--------crash leader %d\n", leader)
 			nup -= 1
 		}
 
@@ -727,6 +728,7 @@ func TestFigure82C(t *testing.T) {
 			if cfg.rafts[s] == nil {
 				cfg.start1(s)
 				cfg.connect(s)
+				log.Printf("----------raft %d is back\n", s)
 				nup += 1
 			}
 		}
